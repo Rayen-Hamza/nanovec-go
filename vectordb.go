@@ -463,31 +463,34 @@ func (db *NanoVectorDB) Query(query []float32, opts QueryOption) []map[string]in
 		return nil
 	}
 
-	// Dot product scoring — parallel on multi-core, inline on single-core.
+	// Dot product scoring via OpenBLAS SGEMV.
+	//
+	// Fast path (no filter): the matrix is already contiguous in memory -
+	// hand it directly to SGEMV for a single AVX-optimised kernel call.
+	//
+	// Filtered path: gather the relevant rows into a contiguous scratch
+	// buffer first, then call SGEMV once on that buffer.
 	scores := make([]float32, m)
-	workers := runtime.NumCPU()
-	if workers <= 1 {
-		// Single-core fast path: no goroutine overhead
-		for i, row := range filterIndex {
-			scores[i] = dotProduct(db.matrix[row*dim:(row+1)*dim], q)
-		}
+	if opts.FilterFunc == nil {
+		// Whole matrix is contiguous - one SGEMV call, zero copies.
+		blasScores(db.matrix, q, m, dim, scores)
 	} else {
-		chunk := (m + workers - 1) / workers
-		var wg sync.WaitGroup
-		for w := 0; w < workers; w++ {
-			s, e := w*chunk, (w+1)*chunk
-			if e > m { e = m }
-			if s >= e { break }
-			wg.Add(1)
-			go func(start, end int) {
-				defer wg.Done()
-				for i := start; i < end; i++ {
-					row := filterIndex[i]
-					scores[i] = dotProduct(db.matrix[row*dim:(row+1)*dim], q)
-				}
-			}(s, e)
+		// Filtered path: gather rows in cache-friendly chunks, then SGEMV per chunk.
+		// A scratch buffer of 512 rows * 1024 floats = 2MB fits in L2/L3 cache,
+		// so each SGEMV call sees warm data.
+		const chunkRows = 512
+		scratch := make([]float32, chunkRows*dim)
+		for base := 0; base < m; base += chunkRows {
+			end := base + chunkRows
+			if end > m {
+				end = m
+			}
+			c := end - base
+			for i, row := range filterIndex[base:end] {
+				copy(scratch[i*dim:(i+1)*dim], db.matrix[row*dim:(row+1)*dim])
+			}
+			blasScores(scratch[:c*dim], q, c, dim, scores[base:end])
 		}
-		wg.Wait()
 	}
 
 	k := opts.TopK
