@@ -2,47 +2,60 @@
 
 A high-performance Go port of [nano-vectordb](https://github.com/gusye1234/nano-vectordb), with OpenBLAS acceleration.
 
-## Benchmark (100,000 vectors × dim=1024, single Xeon core)
+## Benchmark (100,000 vectors × dim=1024)
 
-| Operation      | Python (numpy) | Go (nanovec-go) | Speedup    |
-|----------------|---------------|-----------------|------------|
-| Upsert 100k    | ~1809 ms      | ~750 ms         | **2.4×**   |
-| Query top-10   | ~34.5 ms      | ~32.9 ms        | **1.05×**  |
-| Save to disk   | ~8800 ms      | ~600 ms         | **~15×**   |
-| Load from disk | ~3600 ms      | ~350 ms         | **~10×**   |
+Tested on Intel i5-11400H (6 cores / 12 threads), pure-Go mode (`CGO_ENABLED=0`):
 
-On **multi-core** machines the gap widens further — Go has no GIL and
-parallelizes upsert normalization across all cores, while Python's numpy
-is single-threaded.
+| Operation      | Python (numpy) | Go (nanovec-go) | Speedup     |
+|----------------|---------------|-----------------|-------------|
+| Upsert 100k    | ~1809 ms      | ~333 ms         | **5.4×**    |
+| Query top-10   | ~34.5 ms      | ~14.2 ms        | **2.4×**    |
+| Save to disk   | ~8800 ms      | ~452 ms         | **~19×**    |
+| Load from disk | ~3600 ms      | ~290 ms         | **~12×**    |
 
-## How query matches Python
+Query uses **parallel SGEMV** — the matrix is split across all CPU cores,
+each computes a local top-K, then results are merged. Upsert parallelizes
+normalization the same way. Save/Load use a **binary format** (raw float32
+memory dump) instead of JSON, making I/O ~195× faster than the original
+JSON serialization.
 
-Python's `np.dot(matrix, query)` calls **OpenBLAS SGEMV** under the hood —
-hand-written AVX2/AVX-512 assembly for float32 matrix-vector multiply.
+## How query works
 
-nanovec-go calls the **same OpenBLAS kernel** via CGO, so both languages
-run identical native code. The result: equal single-core query speed, with
-Go winning on throughput from eliminated GIL overhead.
+With OpenBLAS enabled, nanovec-go calls the **same SGEMV kernel** as numpy
+(hand-written AVX2/AVX-512 assembly). Without OpenBLAS, a pure-Go fallback
+with 8-wide loop unrolling is used automatically (`CGO_ENABLED=0`).
+
+Queries are parallelized: the matrix is split across `NumCPU` workers, each
+runs SGEMV + local top-K on its chunk, then partial results are merged.
 
 ## Architecture
 
 ```
-Query path (no filter):
-  normalize(q) → cblas_sgemv(matrix[N×dim], q) → heap top-K → results
-  ↑ one BLAS call over the entire contiguous matrix, zero copies
+Query path (no filter, parallel):
+  normalize(q) → split matrix across NumCPU workers
+    → each: SGEMV(chunk, q) → local top-K
+    → merge partial top-K → final results
 
 Query path (with filter):
-  normalize(q) → gather rows into 512-row chunks → cblas_sgemv per chunk → heap top-K
+  normalize(q) → gather matching rows into 512-row chunks
+    → SGEMV per chunk → merge top-K
   ↑ chunk size fits L2/L3 cache (~2MB per chunk)
 
 Upsert path:
-  pre-alloc slab[N×dim] → parallel normalize (NumCPU workers) → bulk append
-  ↑ zero per-vector allocations in the hot path
+  validate → pre-alloc slab[N×dim] → parallel normalize (NumCPU workers)
+    → lock → insert/update → bulk append → unlock
+
+Save path:
+  binary header (20 bytes) → raw float32 matrix dump → JSON metadata
+  ↑ zero per-element encoding, ~195× faster than JSON
 ```
 
 ## Performance techniques
 
-- **OpenBLAS SGEMV** via CGO — AVX2/AVX-512 matrix-vector multiply, same kernel as numpy
+- **Parallel SGEMV** — query split across all CPU cores, local top-K per worker, merged
+- **OpenBLAS SGEMV** via CGO — AVX2/AVX-512 matrix-vector multiply (optional)
+- **Pure-Go fallback** — 8-wide unrolled dot product when CGO is disabled
+- **Binary I/O** — raw float32 memory dump, ~195× faster than JSON serialization
 - **Slab allocation** — one `[]float32` for all incoming vectors, no per-item `make()`
 - **Worker pool** — normalization chunked across `NumCPU` goroutines
 - **O(1) upsert lookup** — `id→rowIndex` hash map vs Python's linear scan
@@ -118,3 +131,4 @@ mt.Save()
 | `blas_nocgo.go`   | Pure-Go fallback when CGO is disabled            |
 | `uuid.go`         | stdlib UUID (no external deps)                   |
 | `vectordb_test.go`| Unit tests + benchmarks                          |
+| `REPORT.md`       | Full technical report and vector DB theory        |
