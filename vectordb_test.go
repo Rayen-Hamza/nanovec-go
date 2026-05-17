@@ -388,6 +388,64 @@ func BenchmarkUpsert100k(b *testing.B) {
 	}
 }
 
+func BenchmarkSave100k(b *testing.B) {
+	const (
+		n   = 100_000
+		dim = 1024
+	)
+	f := filepath.Join(b.TempDir(), "bench_save.json")
+
+	vdb, err := nanovdb.NewNanoVectorDB(dim, f)
+	if err != nil {
+		b.Fatal(err)
+	}
+	datas := make([]nanovdb.Data, n)
+	for i := range datas {
+		datas[i] = nanovdb.Data{nanovdb.FieldVector: randVec(dim)}
+	}
+	if _, err := vdb.Upsert(datas); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := vdb.Save(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkLoad100k(b *testing.B) {
+	const (
+		n   = 100_000
+		dim = 1024
+	)
+	f := filepath.Join(b.TempDir(), "bench_load.json")
+
+	vdb, err := nanovdb.NewNanoVectorDB(dim, f)
+	if err != nil {
+		b.Fatal(err)
+	}
+	datas := make([]nanovdb.Data, n)
+	for i := range datas {
+		datas[i] = nanovdb.Data{nanovdb.FieldVector: randVec(dim)}
+	}
+	if _, err := vdb.Upsert(datas); err != nil {
+		b.Fatal(err)
+	}
+	if err := vdb.Save(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := nanovdb.NewNanoVectorDB(dim, f)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkQuery100k(b *testing.B) {
 	const (
 		n   = 100_000
