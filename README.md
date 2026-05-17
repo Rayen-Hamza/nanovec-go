@@ -1,17 +1,17 @@
 # nanovec-go
 
-A high-performance Go port of [nano-vectordb](https://github.com/gusye1234/nano-vectordb), with OpenBLAS acceleration.
+A high-performance Go port of [nano-vectordb](https://github.com/gusye1234/nano-vectordb). Single static binary, zero external dependencies.
 
 ## Benchmark (100,000 vectors × dim=1024)
 
-Tested on Intel i5-11400H (6 cores / 12 threads), pure-Go mode (`CGO_ENABLED=0`):
+Tested on Intel i5-11400H (6 cores / 12 threads):
 
 | Operation      | Python (numpy) | Go (nanovec-go) | Speedup     |
 |----------------|---------------|-----------------|-------------|
-| Upsert 100k    | ~1809 ms      | ~333 ms         | **5.4×**    |
-| Query top-10   | ~34.5 ms      | ~14.2 ms        | **2.4×**    |
+| Upsert 100k    | ~1809 ms      | ~256 ms         | **7.1×**    |
+| Query top-10   | ~34.5 ms      | ~13.5 ms        | **2.6×**    |
 | Save to disk   | ~8800 ms      | ~452 ms         | **~19×**    |
-| Load from disk | ~3600 ms      | ~290 ms         | **~12×**    |
+| Load from disk | ~3600 ms      | ~297 ms         | **~12×**    |
 
 Query uses **parallel SGEMV** — the matrix is split across all CPU cores,
 each computes a local top-K, then results are merged. Upsert parallelizes
@@ -21,9 +21,10 @@ JSON serialization.
 
 ## How query works
 
-With OpenBLAS enabled, nanovec-go calls the **same SGEMV kernel** as numpy
-(hand-written AVX2/AVX-512 assembly). Without OpenBLAS, a pure-Go fallback
-with 8-wide loop unrolling is used automatically (`CGO_ENABLED=0`).
+nanovec-go ships its own **hand-written SGEMV kernels** in Go assembly —
+AVX2+FMA3 on x86_64, NEON on ARM64. No CGO, no OpenBLAS, no C compiler needed.
+On CPUs without AVX2 (pre-2013 x86), a pure-Go fallback with 8-wide loop
+unrolling is used automatically.
 
 Queries are parallelized: the matrix is split across `NumCPU` workers, each
 runs SGEMV + local top-K on its chunk, then partial results are merged.
@@ -53,8 +54,9 @@ Save path:
 ## Performance techniques
 
 - **Parallel SGEMV** — query split across all CPU cores, local top-K per worker, merged
-- **OpenBLAS SGEMV** via CGO — AVX2/AVX-512 matrix-vector multiply (optional)
-- **Pure-Go fallback** — 8-wide unrolled dot product when CGO is disabled
+- **Custom AVX2+FMA3 assembly** — hand-written SGEMV kernel, zero dependencies
+- **NEON assembly** — ARM64 kernel for Apple Silicon / AWS Graviton
+- **Pure-Go fallback** — 8-wide unrolled dot product on unsupported architectures
 - **Binary I/O** — raw float32 memory dump, ~195× faster than JSON serialization
 - **Slab allocation** — one `[]float32` for all incoming vectors, no per-item `make()`
 - **Worker pool** — normalization chunked across `NumCPU` goroutines
@@ -115,11 +117,11 @@ mt.Save()
 ## Requirements
 
 - Go 1.21+
-- OpenBLAS (optional — a pure-Go fallback is used when CGO is disabled):
-  - **Debian/Ubuntu:** `apt install libopenblas-dev`
-  - **Fedora/RHEL:** `dnf install openblas-devel`
-  - **macOS (Homebrew):** `brew install openblas`
-  - **Without OpenBLAS:** `CGO_ENABLED=0 go build ./...` (uses pure-Go dot product, slower)
+
+No external dependencies. Builds into a single static binary on all platforms:
+```
+go build ./...
+```
 
 ## Files
 
@@ -127,8 +129,10 @@ mt.Save()
 |-------------------|--------------------------------------------------|
 | `go.mod`          | Go module definition                             |
 | `vectordb.go`     | NanoVectorDB + MultiTenantNanoVDB implementation |
-| `blas.go`         | CGO OpenBLAS SGEMV wrapper (linux, macOS, win)   |
-| `blas_nocgo.go`   | Pure-Go fallback when CGO is disabled            |
+| `simd_amd64.go/s` | AVX2+FMA3 SGEMV kernel + CPUID detection (x86_64)|
+| `simd_arm64.go/s` | NEON SGEMV kernel (ARM64)                        |
+| `simd_generic.go` | Pure-Go fallback (other architectures)            |
+| `simd_test.go`    | SIMD correctness tests + dot product benchmarks  |
 | `uuid.go`         | stdlib UUID (no external deps)                   |
 | `vectordb_test.go`| Unit tests + benchmarks                          |
 | `REPORT.md`       | Full technical report and vector DB theory        |

@@ -1,10 +1,24 @@
-//go:build !cgo
-
 package nanovectordb
 
-// blasScores computes scores[i] = dot(matrix[i*dim:(i+1)*dim], query)
-// for all i in [0, n). Pure-Go fallback when OpenBLAS is not available.
+var useAVX2FMA bool
+
+func init() {
+	useAVX2FMA = cpuHasAVX2FMA()
+}
+
+func cpuHasAVX2FMA() bool
+
+//go:noescape
+func dotAVX2(matrix *float32, query *float32, n int, dim int, scores *float32)
+
 func blasScores(matrix []float32, query []float32, n, dim int, scores []float32) {
+	if n == 0 {
+		return
+	}
+	if useAVX2FMA {
+		dotAVX2(&matrix[0], &query[0], n, dim, &scores[0])
+		return
+	}
 	for i := 0; i < n; i++ {
 		row := matrix[i*dim : (i+1)*dim]
 		var sum float32
