@@ -54,19 +54,20 @@ Upsert path:
 ## Usage
 
 ```go
-import nanovdb "github.com/yourusername/nanovec-go"
+import nanovdb "github.com/Rayen-Hamza/nanovec-go"
 
 // Create or load a DB (loads from file if it exists)
 vdb, err := nanovdb.NewNanoVectorDB(1024, "my.json")
 
-// Upsert — batch insert/update
-report := vdb.Upsert([]nanovdb.Data{
+// Upsert — batch insert/update (validates vector types and dimensions)
+report, err := vdb.Upsert([]nanovdb.Data{
     {
         nanovdb.FieldVector: []float32{ /* 1024-dim embedding */ },
         nanovdb.FieldID:     "optional-custom-id",   // omit for auto-ID
         "any_field":         "any_value",
     },
 })
+if err != nil { /* handle validation error */ }
 fmt.Println(report.Insert, report.Update)
 
 // Query — cosine similarity top-K
@@ -101,13 +102,19 @@ mt.Save()
 ## Requirements
 
 - Go 1.21+
-- OpenBLAS: `apt install libopenblas-dev` / `brew install openblas`
+- OpenBLAS (optional — a pure-Go fallback is used when CGO is disabled):
+  - **Debian/Ubuntu:** `apt install libopenblas-dev`
+  - **Fedora/RHEL:** `dnf install openblas-devel`
+  - **macOS (Homebrew):** `brew install openblas`
+  - **Without OpenBLAS:** `CGO_ENABLED=0 go build ./...` (uses pure-Go dot product, slower)
 
 ## Files
 
 | File              | Purpose                                          |
 |-------------------|--------------------------------------------------|
+| `go.mod`          | Go module definition                             |
 | `vectordb.go`     | NanoVectorDB + MultiTenantNanoVDB implementation |
-| `blas.go`         | CGO OpenBLAS SGEMV wrapper                       |
+| `blas.go`         | CGO OpenBLAS SGEMV wrapper (linux, macOS, win)   |
+| `blas_nocgo.go`   | Pure-Go fallback when CGO is disabled            |
 | `uuid.go`         | stdlib UUID (no external deps)                   |
 | `vectordb_test.go`| Unit tests + benchmarks                          |

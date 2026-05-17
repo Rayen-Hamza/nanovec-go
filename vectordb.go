@@ -12,12 +12,11 @@ package nanovectordb
 
 import (
 	"container/heap"
-	"crypto/md5"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"sync"
@@ -76,30 +75,6 @@ func normalizeInPlace(v []float32) {
 	for i := range v {
 		v[i] *= inv
 	}
-}
-
-// dotProduct computes dot(a, b) with 8-wide unrolling.
-func dotProduct(a, b []float32) float32 {
-	var sum float32
-	n, i := len(a), 0
-	for ; i <= n-8; i += 8 {
-		sum += a[i]*b[i] + a[i+1]*b[i+1] + a[i+2]*b[i+2] + a[i+3]*b[i+3] +
-			a[i+4]*b[i+4] + a[i+5]*b[i+5] + a[i+6]*b[i+6] + a[i+7]*b[i+7]
-	}
-	for ; i < n; i++ {
-		sum += a[i] * b[i]
-	}
-	return sum
-}
-
-// hashVector: content-based ID (only called when caller explicitly passes __id__-less data
-// and wants reproducible IDs across restarts).
-func hashVector(v []float32) string {
-	buf := make([]byte, 4*len(v))
-	for i, f := range v {
-		binary.LittleEndian.PutUint32(buf[4*i:], math.Float32bits(f))
-	}
-	return fmt.Sprintf("%x", md5.Sum(buf))
 }
 
 // autoIDSeq is a global monotonic counter used for fast default IDs.
@@ -276,12 +251,27 @@ func (db *NanoVectorDB) StoreAdditionalData(kv map[string]interface{}) {
 
 // Upsert inserts or updates a batch of vectors.
 // Normalization is done in a bounded worker pool (no per-item goroutine overhead).
-func (db *NanoVectorDB) Upsert(datas []Data) UpsertReport {
+func (db *NanoVectorDB) Upsert(datas []Data) (UpsertReport, error) {
 	report := UpsertReport{Update: []string{}, Insert: []string{}}
 	if len(datas) == 0 {
-		return report
+		return report, nil
 	}
 	dim := db.EmbeddingDim
+
+	for i, d := range datas {
+		vec, ok := d[FieldVector].([]float32)
+		if !ok {
+			return report, fmt.Errorf("data[%d]: %s must be []float32", i, FieldVector)
+		}
+		if len(vec) != dim {
+			return report, fmt.Errorf("data[%d]: vector length %d != embedding dim %d", i, len(vec), dim)
+		}
+		if id, hasID := d[FieldID]; hasID {
+			if _, ok := id.(string); !ok {
+				return report, fmt.Errorf("data[%d]: %s must be string", i, FieldID)
+			}
+		}
+	}
 
 	// Pre-allocate a flat slab for all incoming vectors (avoids per-item alloc).
 	// Workers normalize directly into the slab.
@@ -338,7 +328,6 @@ func (db *NanoVectorDB) Upsert(datas []Data) UpsertReport {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	// Separate inserts from updates; bulk-append inserts in one allocation.
 	insertSlabs := make([]float32, 0, len(datas)*dim)
 	for idx, e := range entries {
 		slabRow := slab[idx*dim : (idx+1)*dim]
@@ -347,38 +336,27 @@ func (db *NanoVectorDB) Upsert(datas []Data) UpsertReport {
 			db.data[rowIdx] = e.meta
 			report.Update = append(report.Update, e.id)
 		} else {
-			db.idToIndex[e.id] = len(db.data) + len(report.Insert)
 			db.data = append(db.data, e.meta)
 			insertSlabs = append(insertSlabs, slabRow...)
 			report.Insert = append(report.Insert, e.id)
 		}
 	}
-	// Fix idToIndex for inserts (len(db.data) was snapshotted before appends above)
-	// Actually we computed it wrong above; let's recompute.
-	// Simpler: rebuild only for inserted IDs.
 	baseIdx := len(db.matrix) / dim
 	db.matrix = append(db.matrix, insertSlabs...)
 	for i, id := range report.Insert {
 		db.idToIndex[id] = baseIdx + i
 	}
-	// Fix data indices: they were appended in order above, so indices are correct.
-	return report
+	return report, nil
 }
 
 // Get retrieves metadata rows by ID (no vector).
 func (db *NanoVectorDB) Get(ids []string) []map[string]interface{} {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
-	set := make(map[string]struct{}, len(ids))
+	results := make([]map[string]interface{}, 0, len(ids))
 	for _, id := range ids {
-		set[id] = struct{}{}
-	}
-	var results []map[string]interface{}
-	for _, row := range db.data {
-		if id, ok := row[FieldID].(string); ok {
-			if _, want := set[id]; want {
-				results = append(results, row)
-			}
+		if idx, ok := db.idToIndex[id]; ok {
+			results = append(results, db.data[idx])
 		}
 	}
 	return results
@@ -429,6 +407,9 @@ func (db *NanoVectorDB) Save() error {
 // Query finds the top-K most similar vectors (cosine similarity).
 // Dot-product scoring is parallelized across CPU cores.
 func (db *NanoVectorDB) Query(query []float32, opts QueryOption) []map[string]interface{} {
+	if len(query) != db.EmbeddingDim {
+		return nil
+	}
 	if opts.TopK <= 0 {
 		opts.TopK = 10
 	}
@@ -463,41 +444,68 @@ func (db *NanoVectorDB) Query(query []float32, opts QueryOption) []map[string]in
 		return nil
 	}
 
-	// Dot product scoring via OpenBLAS SGEMV.
-	//
-	// Fast path (no filter): the matrix is already contiguous in memory -
-	// hand it directly to SGEMV for a single AVX-optimised kernel call.
-	//
-	// Filtered path: gather the relevant rows into a contiguous scratch
-	// buffer first, then call SGEMV once on that buffer.
-	scores := make([]float32, m)
-	if opts.FilterFunc == nil {
-		// Whole matrix is contiguous - one SGEMV call, zero copies.
-		blasScores(db.matrix, q, m, dim, scores)
-	} else {
-		// Filtered path: gather rows in cache-friendly chunks, then SGEMV per chunk.
-		// A scratch buffer of 512 rows * 1024 floats = 2MB fits in L2/L3 cache,
-		// so each SGEMV call sees warm data.
-		const chunkRows = 512
-		scratch := make([]float32, chunkRows*dim)
-		for base := 0; base < m; base += chunkRows {
-			end := base + chunkRows
-			if end > m {
-				end = m
-			}
-			c := end - base
-			for i, row := range filterIndex[base:end] {
-				copy(scratch[i*dim:(i+1)*dim], db.matrix[row*dim:(row+1)*dim])
-			}
-			blasScores(scratch[:c*dim], q, c, dim, scores[base:end])
-		}
-	}
-
 	k := opts.TopK
 	if k > m {
 		k = m
 	}
-	ranked := topK(scores, filterIndex, k)
+
+	const parallelThreshold = 10_000
+	workers := runtime.NumCPU()
+	if m < parallelThreshold || workers < 2 {
+		workers = 1
+	}
+
+	var ranked []scoredIdx
+	if workers == 1 {
+		scores := make([]float32, m)
+		if opts.FilterFunc == nil {
+			blasScores(db.matrix, q, m, dim, scores)
+		} else {
+			scoreSgemvFiltered(db.matrix, q, dim, filterIndex, scores)
+		}
+		ranked = topK(scores, filterIndex, k)
+	} else {
+		chunk := (m + workers - 1) / workers
+		partials := make([][]scoredIdx, workers)
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			s, e := w*chunk, (w+1)*chunk
+			if e > m {
+				e = m
+			}
+			if s >= e {
+				break
+			}
+			wg.Add(1)
+			go func(wIdx, start, end int) {
+				defer wg.Done()
+				c := end - start
+				localScores := make([]float32, c)
+				localFilter := filterIndex[start:end]
+				if opts.FilterFunc == nil {
+					blasScores(db.matrix[localFilter[0]*dim:], q, c, dim, localScores)
+				} else {
+					scoreSgemvFiltered(db.matrix, q, dim, localFilter, localScores)
+				}
+				partials[wIdx] = topK(localScores, localFilter, k)
+			}(w, s, e)
+		}
+		wg.Wait()
+
+		total := 0
+		for _, p := range partials {
+			total += len(p)
+		}
+		merged := make([]float32, 0, total)
+		mergedIdx := make([]int, 0, total)
+		for _, p := range partials {
+			for _, si := range p {
+				merged = append(merged, si.score)
+				mergedIdx = append(mergedIdx, si.index)
+			}
+		}
+		ranked = topK(merged, mergedIdx, k)
+	}
 
 	results := make([]map[string]interface{}, 0, len(ranked))
 	for _, r := range ranked {
@@ -547,7 +555,7 @@ func NewMultiTenantNanoVDB(embeddingDim, maxCapacity int, storageDir string) (*M
 }
 
 func (m *MultiTenantNanoVDB) jsonFile(id string) string {
-	return fmt.Sprintf("%s/nanovdb_%s.json", m.StorageDir, id)
+	return filepath.Join(m.StorageDir, fmt.Sprintf("nanovdb_%s.json", id))
 }
 
 // ContainsTenant checks if a tenant exists in memory or on disk.
@@ -559,6 +567,16 @@ func (m *MultiTenantNanoVDB) ContainsTenant(id string) bool {
 	}
 	_, err := os.Stat(m.jsonFile(id))
 	return err == nil
+}
+
+func (m *MultiTenantNanoVDB) touchLRU(id string) {
+	for i, qid := range m.lruQueue {
+		if qid == id {
+			m.lruQueue = append(m.lruQueue[:i], m.lruQueue[i+1:]...)
+			break
+		}
+	}
+	m.lruQueue = append(m.lruQueue, id)
 }
 
 func (m *MultiTenantNanoVDB) evict() error {
@@ -598,6 +616,7 @@ func (m *MultiTenantNanoVDB) GetTenant(id string) (*NanoVectorDB, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if vdb, ok := m.tenants[id]; ok {
+		m.touchLRU(id)
 		return vdb, nil
 	}
 	if _, err := os.Stat(m.jsonFile(id)); err != nil {

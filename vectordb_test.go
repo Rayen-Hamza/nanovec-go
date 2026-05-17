@@ -1,12 +1,11 @@
 package nanovectordb_test
 
 import (
-	"fmt"
 	"math/rand"
-	"os"
+	"path/filepath"
 	"testing"
 
-	nanovdb "nano-vectordb"
+	nanovdb "github.com/Rayen-Hamza/nanovec-go"
 )
 
 func randVec(dim int) []float32 {
@@ -19,8 +18,7 @@ func randVec(dim int) []float32 {
 
 func TestUpsertAndQuery(t *testing.T) {
 	const dim = 64
-	f := "/tmp/test_upsert.json"
-	defer os.Remove(f)
+	f := filepath.Join(t.TempDir(), "test_upsert.json")
 
 	vdb, err := nanovdb.NewNanoVectorDB(dim, f)
 	if err != nil {
@@ -34,7 +32,10 @@ func TestUpsertAndQuery(t *testing.T) {
 			"idx":               i,
 		}
 	}
-	report := vdb.Upsert(datas)
+	report, err := vdb.Upsert(datas)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(report.Insert) != 200 {
 		t.Fatalf("expected 200 inserts, got %d", len(report.Insert))
 	}
@@ -46,7 +47,6 @@ func TestUpsertAndQuery(t *testing.T) {
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
-	// Scores must be descending
 	for i := 1; i < len(results); i++ {
 		prev := results[i-1][nanovdb.FieldMetrics].(float32)
 		cur := results[i][nanovdb.FieldMetrics].(float32)
@@ -58,17 +58,25 @@ func TestUpsertAndQuery(t *testing.T) {
 
 func TestUpsertUpdate(t *testing.T) {
 	const dim = 16
-	f := "/tmp/test_update.json"
-	defer os.Remove(f)
+	f := filepath.Join(t.TempDir(), "test_update.json")
 
-	vdb, _ := nanovdb.NewNanoVectorDB(dim, f)
+	vdb, err := nanovdb.NewNanoVectorDB(dim, f)
+	if err != nil {
+		t.Fatal(err)
+	}
 	id := "fixed-id"
 	d := nanovdb.Data{nanovdb.FieldID: id, nanovdb.FieldVector: randVec(dim)}
-	r1 := vdb.Upsert([]nanovdb.Data{d})
+	r1, err := vdb.Upsert([]nanovdb.Data{d})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(r1.Insert) != 1 {
 		t.Fatal("expected insert")
 	}
-	r2 := vdb.Upsert([]nanovdb.Data{d})
+	r2, err := vdb.Upsert([]nanovdb.Data{d})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(r2.Update) != 1 {
 		t.Fatal("expected update")
 	}
@@ -79,16 +87,20 @@ func TestUpsertUpdate(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	const dim = 16
-	f := "/tmp/test_delete.json"
-	defer os.Remove(f)
+	f := filepath.Join(t.TempDir(), "test_delete.json")
 
-	vdb, _ := nanovdb.NewNanoVectorDB(dim, f)
+	vdb, err := nanovdb.NewNanoVectorDB(dim, f)
+	if err != nil {
+		t.Fatal(err)
+	}
 	datas := []nanovdb.Data{
 		{nanovdb.FieldID: "a", nanovdb.FieldVector: randVec(dim)},
 		{nanovdb.FieldID: "b", nanovdb.FieldVector: randVec(dim)},
 		{nanovdb.FieldID: "c", nanovdb.FieldVector: randVec(dim)},
 	}
-	vdb.Upsert(datas)
+	if _, err := vdb.Upsert(datas); err != nil {
+		t.Fatal(err)
+	}
 	vdb.Delete([]string{"b"})
 	if vdb.Len() != 2 {
 		t.Fatalf("expected 2 after delete, got %d", vdb.Len())
@@ -101,18 +113,22 @@ func TestDelete(t *testing.T) {
 
 func TestSaveAndReload(t *testing.T) {
 	const dim = 32
-	f := "/tmp/test_persist.json"
-	defer os.Remove(f)
+	f := filepath.Join(t.TempDir(), "test_persist.json")
 
-	vdb, _ := nanovdb.NewNanoVectorDB(dim, f)
+	vdb, err := nanovdb.NewNanoVectorDB(dim, f)
+	if err != nil {
+		t.Fatal(err)
+	}
 	datas := make([]nanovdb.Data, 50)
 	for i := range datas {
 		datas[i] = nanovdb.Data{
 			nanovdb.FieldVector: randVec(dim),
-			"x":                 fmt.Sprintf("v%d", i),
+			"x":                 i,
 		}
 	}
-	vdb.Upsert(datas)
+	if _, err := vdb.Upsert(datas); err != nil {
+		t.Fatal(err)
+	}
 	if err := vdb.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -128,10 +144,12 @@ func TestSaveAndReload(t *testing.T) {
 
 func TestFilterQuery(t *testing.T) {
 	const dim = 16
-	f := "/tmp/test_filter.json"
-	defer os.Remove(f)
+	f := filepath.Join(t.TempDir(), "test_filter.json")
 
-	vdb, _ := nanovdb.NewNanoVectorDB(dim, f)
+	vdb, err := nanovdb.NewNanoVectorDB(dim, f)
+	if err != nil {
+		t.Fatal(err)
+	}
 	datas := make([]nanovdb.Data, 100)
 	for i := range datas {
 		datas[i] = nanovdb.Data{
@@ -139,7 +157,9 @@ func TestFilterQuery(t *testing.T) {
 			"group":             i % 2,
 		}
 	}
-	vdb.Upsert(datas)
+	if _, err := vdb.Upsert(datas); err != nil {
+		t.Fatal(err)
+	}
 
 	results := vdb.Query(randVec(dim), nanovdb.QueryOption{
 		TopK: 10,
@@ -157,6 +177,191 @@ func TestFilterQuery(t *testing.T) {
 }
 
 // ──────────────────────────────────────────────
+// Upsert validation tests
+// ──────────────────────────────────────────────
+
+func TestUpsertValidation(t *testing.T) {
+	const dim = 16
+	f := filepath.Join(t.TempDir(), "test_validation.json")
+	vdb, err := nanovdb.NewNanoVectorDB(dim, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("missing vector", func(t *testing.T) {
+		_, err := vdb.Upsert([]nanovdb.Data{{"foo": "bar"}})
+		if err == nil {
+			t.Fatal("expected error for missing vector")
+		}
+	})
+
+	t.Run("wrong vector type", func(t *testing.T) {
+		_, err := vdb.Upsert([]nanovdb.Data{{nanovdb.FieldVector: []float64{1, 2, 3}}})
+		if err == nil {
+			t.Fatal("expected error for wrong vector type")
+		}
+	})
+
+	t.Run("wrong dimension", func(t *testing.T) {
+		_, err := vdb.Upsert([]nanovdb.Data{{nanovdb.FieldVector: []float32{1, 2, 3}}})
+		if err == nil {
+			t.Fatal("expected error for wrong dimension")
+		}
+	})
+
+	t.Run("wrong ID type", func(t *testing.T) {
+		_, err := vdb.Upsert([]nanovdb.Data{{
+			nanovdb.FieldVector: randVec(dim),
+			nanovdb.FieldID:     12345,
+		}})
+		if err == nil {
+			t.Fatal("expected error for wrong ID type")
+		}
+	})
+}
+
+// ──────────────────────────────────────────────
+// MultiTenantNanoVDB tests
+// ──────────────────────────────────────────────
+
+func TestMultiTenantBasic(t *testing.T) {
+	dir := t.TempDir()
+	mt, err := nanovdb.NewMultiTenantNanoVDB(16, 10, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := mt.CreateTenant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mt.ContainsTenant(id) {
+		t.Fatal("tenant should exist after creation")
+	}
+
+	tenant, err := mt.GetTenant(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tenant.Upsert([]nanovdb.Data{{nanovdb.FieldVector: randVec(16)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tenant.Len() != 1 {
+		t.Fatalf("expected 1 vector, got %d", tenant.Len())
+	}
+}
+
+func TestMultiTenantDelete(t *testing.T) {
+	dir := t.TempDir()
+	mt, err := nanovdb.NewMultiTenantNanoVDB(16, 10, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := mt.CreateTenant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt.DeleteTenant(id)
+	if mt.ContainsTenant(id) {
+		t.Fatal("tenant should not exist after deletion")
+	}
+}
+
+func TestMultiTenantSaveAndReload(t *testing.T) {
+	const dim = 16
+	dir := t.TempDir()
+
+	mt, err := nanovdb.NewMultiTenantNanoVDB(dim, 10, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := mt.CreateTenant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant, err := mt.GetTenant(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tenant.Upsert([]nanovdb.Data{{nanovdb.FieldVector: randVec(dim), nanovdb.FieldID: "v1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	mt2, err := nanovdb.NewMultiTenantNanoVDB(dim, 10, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant2, err := mt2.GetTenant(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tenant2.Len() != 1 {
+		t.Fatalf("expected 1 vector after reload, got %d", tenant2.Len())
+	}
+}
+
+func TestMultiTenantLRUEviction(t *testing.T) {
+	const dim = 16
+	dir := t.TempDir()
+
+	mt, err := nanovdb.NewMultiTenantNanoVDB(dim, 2, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id1, err := mt.CreateTenant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant1, _ := mt.GetTenant(id1)
+	_, err = tenant1.Upsert([]nanovdb.Data{{nanovdb.FieldVector: randVec(dim), nanovdb.FieldID: "t1v1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id2, err := mt.CreateTenant()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Touch id1 so it's most-recently-used
+	mt.GetTenant(id1)
+
+	// Creating id3 should evict id2 (LRU), not id1
+	id3, err := mt.CreateTenant()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// id1 should still be accessible (was touched)
+	t1, err := mt.GetTenant(id1)
+	if err != nil {
+		t.Fatal("id1 should be accessible after LRU touch")
+	}
+	if t1.Len() != 1 {
+		t.Fatalf("id1 should still have 1 vector, got %d", t1.Len())
+	}
+
+	// id2 should be loadable from disk
+	_, err = mt.GetTenant(id2)
+	if err != nil {
+		t.Fatal("id2 should be loadable from disk after eviction")
+	}
+
+	// id3 should be accessible
+	_, err = mt.GetTenant(id3)
+	if err != nil {
+		t.Fatal("id3 should be accessible")
+	}
+}
+
+// ──────────────────────────────────────────────
 // Benchmarks
 // ──────────────────────────────────────────────
 
@@ -165,8 +370,6 @@ func BenchmarkUpsert100k(b *testing.B) {
 		n   = 100_000
 		dim = 1024
 	)
-	f := "/tmp/bench_upsert.json"
-	defer os.Remove(f)
 
 	datas := make([]nanovdb.Data, n)
 	for i := range datas {
@@ -174,9 +377,14 @@ func BenchmarkUpsert100k(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		os.Remove(f)
-		vdb, _ := nanovdb.NewNanoVectorDB(dim, f)
-		vdb.Upsert(datas)
+		f := filepath.Join(b.TempDir(), "bench_upsert.json")
+		vdb, err := nanovdb.NewNanoVectorDB(dim, f)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := vdb.Upsert(datas); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -185,15 +393,19 @@ func BenchmarkQuery100k(b *testing.B) {
 		n   = 100_000
 		dim = 1024
 	)
-	f := "/tmp/bench_query.json"
-	defer os.Remove(f)
+	f := filepath.Join(b.TempDir(), "bench_query.json")
 
-	vdb, _ := nanovdb.NewNanoVectorDB(dim, f)
+	vdb, err := nanovdb.NewNanoVectorDB(dim, f)
+	if err != nil {
+		b.Fatal(err)
+	}
 	datas := make([]nanovdb.Data, n)
 	for i := range datas {
 		datas[i] = nanovdb.Data{nanovdb.FieldVector: randVec(dim)}
 	}
-	vdb.Upsert(datas)
+	if _, err := vdb.Upsert(datas); err != nil {
+		b.Fatal(err)
+	}
 	q := randVec(dim)
 
 	b.ResetTimer()
