@@ -1,4 +1,4 @@
-package nanovectordb
+package simd
 
 var useAVX2FMA bool
 
@@ -11,7 +11,8 @@ func cpuHasAVX2FMA() bool
 //go:noescape
 func dotAVX2(matrix *float32, query *float32, n int, dim int, scores *float32)
 
-func blasScores(matrix []float32, query []float32, n, dim int, scores []float32) {
+// Scores computes dot(matrix[i], query) for each row i and writes results to scores.
+func Scores(matrix []float32, query []float32, n, dim int, scores []float32) {
 	if n == 0 {
 		return
 	}

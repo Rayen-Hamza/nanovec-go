@@ -1,1 +1,28 @@
-.claude
+# Claude Code
+.claude/
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Profiling
+*.prof
+*.pprof
+
+# Dependency management
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Database files generated during testing
+*.db

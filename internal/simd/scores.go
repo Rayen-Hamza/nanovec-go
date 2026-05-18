@@ -1,8 +1,9 @@
 //go:build !amd64 && !arm64
 
-package nanovectordb
+package simd
 
-func blasScores(matrix []float32, query []float32, n, dim int, scores []float32) {
+// Scores computes dot(matrix[i], query) for each row i and writes results to scores.
+func Scores(matrix []float32, query []float32, n, dim int, scores []float32) {
 	for i := 0; i < n; i++ {
 		row := matrix[i*dim : (i+1)*dim]
 		var sum float32

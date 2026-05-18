@@ -1,4 +1,4 @@
-package nanovectordb
+package simd
 
 import (
 	"fmt"
@@ -19,7 +19,7 @@ func refDot(matrix, query []float32, n, dim int) []float32 {
 	return scores
 }
 
-func TestBlasScoresCorrectness(t *testing.T) {
+func TestScoresCorrectness(t *testing.T) {
 	dims := []int{1, 3, 7, 8, 15, 16, 31, 32, 33, 63, 64, 127, 128, 384, 512, 768, 1024, 1536}
 	ns := []int{0, 1, 2, 5, 100, 512}
 	rng := rand.New(rand.NewSource(42))
@@ -36,7 +36,7 @@ func TestBlasScoresCorrectness(t *testing.T) {
 			}
 
 			got := make([]float32, n)
-			blasScores(matrix, query, n, dim, got)
+			Scores(matrix, query, n, dim, got)
 			want := refDot(matrix, query, n, dim)
 
 			for i := range got {
@@ -69,7 +69,7 @@ func BenchmarkDotProduct(b *testing.B) {
 			b.SetBytes(int64(n * dim * 4))
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				blasScores(matrix, query, n, dim, scores)
+				Scores(matrix, query, n, dim, scores)
 			}
 		})
 	}
