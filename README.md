@@ -2,7 +2,7 @@
 
 # nanovec-go
 
-**A high-performance, zero-dependency in-memory vector database for Go.**
+**A high-performance, zero-dependency in-memory vector database built with Go.**
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/Rayen-Hamza/nanovec-go.svg)](https://pkg.go.dev/github.com/Rayen-Hamza/nanovec-go)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Rayen-Hamza/nanovec-go)](https://goreportcard.com/report/github.com/Rayen-Hamza/nanovec-go)
@@ -269,4 +269,4 @@ go vet ./...
 
 ## License
 
-[MIT](LICENSE) &copy; 2025 Rayen Hamza
+[MIT](LICENSE) &copy; 2026 Rayen Hamza
